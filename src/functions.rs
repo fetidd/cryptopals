@@ -104,8 +104,8 @@ pub const ALPHABET_LOWER: [char; 26] = [
 ];
 
 fn calculate_fitting_quotient(string: &str) -> f32 {
-    let mut fq = 1.0;
-    let l = string.len();
+    let mut fq = 0.0;
+    let l = string.len() as f32;
     for letter in ALPHABET_LOWER {
         let appearing = string.chars().fold(0, |acc, ch| {
             if ch.to_ascii_lowercase() == letter {
@@ -113,11 +113,12 @@ fn calculate_fitting_quotient(string: &str) -> f32 {
             } else {
                 acc
             }
-        }) as f32
-            / l as f32;
-        dbg!(letter, appearing);
+        });
+        let normal_freq = get_letter_frequency(letter).expect("passed in a non-letter");
+        let diff = (normal_freq - (appearing as f32 / l)).abs();
+        fq += diff;
     }
-    fq
+    fq / ALPHABET_LOWER.len() as f32
 }
 
 pub fn decipher_single_byte_xor(
@@ -125,27 +126,29 @@ pub fn decipher_single_byte_xor(
 ) -> Result<(u8, String, f32), Box<dyn std::error::Error>> {
     let mut best_result: Option<(u8, String, f32)> = None;
     let mut lowest_fitting_quotient = 1.0;
+    let mut fqs = vec![];
     for ch in 0..=255 {
         let xor = vec![ch; input.len()];
-        // dbg!(&input, &xor);
         if let Ok(xored) = fixed_xor(input, &xor) {
             let output = xored
                 .into_iter()
-                .map(|ch| {
-                    Ok(char::from_u32(ch as u32)
-                        .ok_or(format!("failed to get char from byte"))?
-                        .to_string())
-                })
-                .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?
+                .map(|b| (b as char).to_string())
+                .collect::<Vec<_>>()
                 .join("");
-            // check using ETAOIN SHRDLU and fitting quotient
             let fitting_quotient = calculate_fitting_quotient(&output);
-            // if its more confident than the current best, update it
+            fqs.push((output.clone(), fitting_quotient));
             if fitting_quotient < lowest_fitting_quotient {
                 lowest_fitting_quotient = fitting_quotient;
-                best_result = Some((ch, input.to_string(), fitting_quotient)); // TODO making it a string here allocates every time a better match is found, make better?
+                best_result = Some((ch, output, fitting_quotient));
             }
         }
+    }
+    fqs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    fqs.truncate(10);
+    dbg!(fqs);
+    let mut selected_fqs = vec![];
+    for fq in fqs.into_iter() {
+        // only select fqs with >95% letter appearance
     }
     if let Some(output) = best_result {
         Ok(output)
@@ -195,7 +198,11 @@ mod tests {
     #[test]
     fn test_decipher_single_byte_xor() {
         let input = "1b37373331363f78151b7f2b783431333d78397828372d363c78373e783a393b3736";
-        let expected = (88, "Cooking MC's like a pound of bacon".to_string(), 0.0);
+        let expected = (
+            88,
+            "Cooking MC's like a pound of bacon".to_string(),
+            0.027448822,
+        );
         assert_eq!(expected, decipher_single_byte_xor(input).unwrap());
     }
 }
