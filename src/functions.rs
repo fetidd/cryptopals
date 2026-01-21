@@ -143,7 +143,7 @@ pub fn decipher_single_byte_xor(
             }
         }
     }
-    fqs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    fqs.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
     fqs.truncate(10);
     dbg!(fqs);
     let mut selected_fqs = vec![];
