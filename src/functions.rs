@@ -121,11 +121,7 @@ fn calculate_fitting_quotient(string: &str) -> f32 {
     fq / ALPHABET_LOWER.len() as f32
 }
 
-pub fn decipher_single_byte_xor(
-    input: &str,
-) -> Result<(u8, String, f32), Box<dyn std::error::Error>> {
-    let mut best_result: Option<(u8, String, f32)> = None;
-    let mut lowest_fitting_quotient = 1.0;
+pub fn decipher_single_byte_xor(input: &str) -> Result<String, Box<dyn std::error::Error>> {
     let mut fqs = vec![];
     for ch in 0..=255 {
         let xor = vec![ch; input.len()];
@@ -136,25 +132,51 @@ pub fn decipher_single_byte_xor(
                 .collect::<Vec<_>>()
                 .join("");
             let fitting_quotient = calculate_fitting_quotient(&output);
-            fqs.push((output.clone(), fitting_quotient));
-            if fitting_quotient < lowest_fitting_quotient {
-                lowest_fitting_quotient = fitting_quotient;
-                best_result = Some((ch, output, fitting_quotient));
-            }
+            fqs.push((ch, output.clone(), fitting_quotient));
+            // if fitting_quotient < lowest_fitting_quotient {
+            //     lowest_fitting_quotient = fitting_quotient;
+            //     best_result = Some((ch, output, fitting_quotient));
+            // }
         }
     }
-    fqs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    fqs.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap());
     fqs.truncate(10);
-    dbg!(fqs);
     let mut selected_fqs = vec![];
     for fq in fqs.into_iter() {
-        // only select fqs with >95% letter appearance
+        // only select fqs with >95% letter/space appearance
+        let alphas = fq.1.chars().fold(0, |acc, ch| {
+            if ch.is_ascii_alphabetic() || ch == ' ' {
+                acc + 1
+            } else {
+                acc
+            }
+        });
+        let alphas = alphas as f32 / fq.1.len() as f32;
+        if alphas > 0.95 {
+            selected_fqs.push(fq);
+        }
     }
-    if let Some(output) = best_result {
-        Ok(output)
+    if !selected_fqs.is_empty() {
+        Ok(selected_fqs.remove(0).1)
     } else {
         Err("failed to decipher!".into())
     }
+}
+
+pub fn encode_repeating_key_xor(input: &str, key: &str) -> String {
+    let mut xor_byte = key.bytes().cycle();
+    input
+        .bytes()
+        .map(|b| format!("{:02x}", b ^ xor_byte.next().unwrap()))
+        .collect()
+}
+
+pub fn calculate_edit_distance(l: u8, r: u8) -> usize {
+    let xored = l ^ r;
+    [1, 2, 4, 8, 16, 32, 64, 128]
+        .into_iter()
+        .filter(|b| b & xored == *b)
+        .count()
 }
 
 #[cfg(test)]
@@ -198,11 +220,23 @@ mod tests {
     #[test]
     fn test_decipher_single_byte_xor() {
         let input = "1b37373331363f78151b7f2b783431333d78397828372d363c78373e783a393b3736";
-        let expected = (
-            88,
-            "Cooking MC's like a pound of bacon".to_string(),
-            0.027448822,
-        );
+        let expected = "Cooking MC's like a pound of bacon".to_string();
         assert_eq!(expected, decipher_single_byte_xor(input).unwrap());
+    }
+
+    #[test]
+    fn test_encode_repeating_key_xor() {
+        let input = "Burning 'em, if you ain't quick and nimble
+I go crazy when I hear a cymbal";
+        let expected = "0b3637272a2b2e63622c2e69692a23693a2a3c6324202d623d63343c2a26226324272765272a282b2f20430a652e2c652a3124333a653e2b2027630c692b20283165286326302e27282f"
+            .to_string();
+        assert_eq!(expected, encode_repeating_key_xor(input, "ICE"));
+    }
+
+    #[test]
+    fn test_calculate_edit_distance() {
+        for (l, r, exp) in vec![(1, 1, 0), (2, 2, 0), (1, 3, 1), (1, 2, 2)] {
+            assert_eq!(exp, calculate_edit_distance(l, r));
+        }
     }
 }
