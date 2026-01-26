@@ -15,8 +15,11 @@ pub const BASE64_CHARS: [char; 64] = [
 ];
 
 pub fn hex_to_base64(hex: &str) -> Result<String, Box<dyn std::error::Error>> {
-    debug_assert_eq!(hex.len() % 2, 0);
     let bytes = hex_to_bytes(hex)?;
+    bytes_to_base64(&bytes)
+}
+
+pub fn bytes_to_base64(bytes: &[u8]) -> Result<String, Box<dyn std::error::Error>> {
     let mut bytes_ref = &bytes[..];
     let mut b64 = String::new();
     // can do 3 bytes at a time
@@ -56,9 +59,8 @@ pub fn hex_to_base64(hex: &str) -> Result<String, Box<dyn std::error::Error>> {
     Ok(b64)
 }
 
-pub fn fixed_xor(left: &str, right: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    let left_bytes = hex_to_bytes(left)?;
-    let result: Vec<_> = left_bytes
+pub fn fixed_xor(left: &[u8], right: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let result: Vec<_> = left
         .into_iter()
         .enumerate()
         .map(|(i, l)| l ^ right[i])
@@ -103,17 +105,11 @@ pub const ALPHABET_LOWER: [char; 26] = [
     't', 'u', 'v', 'w', 'x', 'y', 'z',
 ];
 
-fn calculate_fitting_quotient(string: &str) -> f32 {
+fn calculate_fitting_quotient(bytes: &[u8]) -> f32 {
     let mut fq = 0.0;
-    let l = string.len() as f32;
+    let l = bytes.len() as f32;
     for letter in ALPHABET_LOWER {
-        let appearing = string.chars().fold(0, |acc, ch| {
-            if ch.to_ascii_lowercase() == letter {
-                acc + 1
-            } else {
-                acc
-            }
-        });
+        let appearing = bytes.iter().filter(|b| b.to_ascii_lowercase() == letter as u8).count();
         let normal_freq = get_letter_frequency(letter).expect("passed in a non-letter");
         let diff = (normal_freq - (appearing as f32 / l)).abs();
         fq += diff;
@@ -121,57 +117,49 @@ fn calculate_fitting_quotient(string: &str) -> f32 {
     fq / ALPHABET_LOWER.len() as f32
 }
 
-pub fn decipher_single_byte_xor(input: &str) -> Result<String, Box<dyn std::error::Error>> {
+pub fn break_single_byte_xor(input: &[u8]) -> Result<(u8, Vec<u8>, f32), Box<dyn std::error::Error>> {
     let mut fqs = vec![];
     for ch in 0..=255 {
         let xor = vec![ch; input.len()];
         if let Ok(xored) = fixed_xor(input, &xor) {
-            let output = xored
-                .into_iter()
-                .map(|b| (b as char).to_string())
-                .collect::<Vec<_>>()
-                .join("");
-            let fitting_quotient = calculate_fitting_quotient(&output);
-            fqs.push((ch, output.clone(), fitting_quotient));
-            // if fitting_quotient < lowest_fitting_quotient {
-            //     lowest_fitting_quotient = fitting_quotient;
-            //     best_result = Some((ch, output, fitting_quotient));
-            // }
+            let fitting_quotient = calculate_fitting_quotient(&xored);
+            fqs.push((ch, xored, fitting_quotient));
         }
     }
     fqs.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap());
     fqs.truncate(10);
     let mut selected_fqs = vec![];
     for fq in fqs.into_iter() {
-        // only select fqs with >95% letter/space appearance
-        let alphas = fq.1.chars().fold(0, |acc, ch| {
-            if ch.is_ascii_alphabetic() || ch == ' ' {
-                acc + 1
-            } else {
-                acc
-            }
-        });
-        let alphas = alphas as f32 / fq.1.len() as f32;
+        let fq_len = fq.1.len() as f32;
+        let alphas = fq.1.iter().filter(|b: &&u8| {
+            b.is_ascii_alphabetic() || **b == b' '
+        }).count();
+        let alphas = alphas as f32 / fq_len;
         if alphas > 0.95 {
             selected_fqs.push(fq);
         }
     }
     if !selected_fqs.is_empty() {
-        Ok(selected_fqs.remove(0).1)
+        let selected = selected_fqs.remove(0);
+        Ok(selected)
     } else {
         Err("failed to decipher!".into())
     }
 }
 
-pub fn encode_repeating_key_xor(input: &str, key: &str) -> String {
+pub fn encrypt_repeating_key_xor(input: &[u8], key: &str) -> Vec<u8> {
     let mut xor_byte = key.bytes().cycle();
     input
-        .bytes()
-        .map(|b| format!("{:02x}", b ^ xor_byte.next().unwrap()))
+        .iter()
+        .map(|b| b ^ xor_byte.next().unwrap())
         .collect()
 }
 
-pub fn calculate_edit_distance(l: u8, r: u8) -> usize {
+pub fn decrypt_repeating_key_xor(input: &[u8], key: &str) -> Vec<u8> {
+    encrypt_repeating_key_xor(input, key)
+}
+
+pub fn calculate_edit_distance_single_byte(l: u8, r: u8) -> usize {
     let xored = l ^ r;
     [1, 2, 4, 8, 16, 32, 64, 128]
         .into_iter()
@@ -179,40 +167,114 @@ pub fn calculate_edit_distance(l: u8, r: u8) -> usize {
         .count()
 }
 
-pub fn base64_to_bytes(input: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    Ok(input.bytes().collect())
+pub fn calculate_edit_distance(left: &[u8], right: &[u8]) -> usize {
+    left
+        .into_iter()
+        .zip(right.into_iter())
+        .map(|(l, r)| calculate_edit_distance_single_byte(*l, *r))
+        .sum()
 }
 
-pub fn break_repeating_key_xor(input: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let input: Vec<u8> = base64_to_bytes(input)?;
-    let mut input_ref = &input[..];
+pub fn base64_to_bytes(input: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let mut bytes = Vec::new();
+    let input: String = input.chars().filter(|c| !c.is_whitespace()).collect();
+    let chars: Vec<char> = input.chars().collect();
+    for chunk in chars.chunks(4) {
+        let indices: Vec<u8> = chunk
+            .iter()
+            .filter(|&&c| c != '=')
+            .map(|&c| match c {
+                'A'..='Z' => c as u8 - b'A',
+                'a'..='z' => c as u8 - b'a' + 26,
+                '0'..='9' => c as u8 - b'0' + 52,
+                '+' => 62,
+                '/' => 63,
+                _ => panic!("invalid base64 character: {c}"),
+            })
+            .collect();
+        match indices.len() {
+            4 => {
+                bytes.push((indices[0] << 2) | (indices[1] >> 4));
+                bytes.push((indices[1] << 4) | (indices[2] >> 2));
+                bytes.push((indices[2] << 6) | indices[3]);
+            }
+            3 => {
+                bytes.push((indices[0] << 2) | (indices[1] >> 4));
+                bytes.push((indices[1] << 4) | (indices[2] >> 2));
+            }
+            2 => {
+                bytes.push((indices[0] << 2) | (indices[1] >> 4));
+            }
+            _ => return Err("invalid base64 input".into()),
+        }
+    }
+    Ok(bytes)
+}
+
+pub fn break_repeating_key_xor(mut input: &[u8]) -> Result<String, Box<dyn std::error::Error>> {
+    // assert!(input.len() % 4 == 0); // this is base64 encoded so should be a multiple of 4
     let mut keys = vec![];
-    for keysize in [1, 2, 3, 4, 5, 6] {
+    for keysize in 1..=40 {
+        if keysize > input.len()/2 {
+            break;
+        }
         let left = &input[..keysize];
         let right = &input[keysize..keysize * 2];
-        let distance: usize = left
-            .into_iter()
-            .zip(right.into_iter())
-            .map(|(l, r)| calculate_edit_distance(*l, *r))
-            .sum();
+        let distance = calculate_edit_distance(left, right);
         let normalized: f32 = distance as f32 / keysize as f32;
         keys.push((keysize, normalized));
     }
     keys.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
-    let keysize = keys[0].0;
+    let keysize = keys[0].0; // TODO this should be more keysizes, maybe 2/3
     let mut chunks = vec![];
-    while input_ref.len() > keysize {
-        let (chunk, rest) = input_ref.split_at(keysize);
+    while input.len() >= keysize {
+        let (chunk, rest) = input.split_at(keysize);
         chunks.push(chunk);
-        input_ref = rest;
+        input = rest;
     }
+    chunks.push(input);
+    let chunks = transpose(&chunks);
+    let mut key = vec![];
+    for chunk in chunks {
+        let (byte, _, _) = break_single_byte_xor(&chunk)?;
+        key.push(byte);
+    }
+    Ok(String::from_utf8(key)?)
+}
 
-    Ok("".into())
+fn transpose(chunks: &[&[u8]]) -> Vec<Vec<u8>> {
+    let mut transposed = vec![vec![]; chunks[0].len()];
+    for chunk in chunks {
+        for (i, byte) in chunk.iter().enumerate() {
+            transposed[i].push(*byte);
+        }
+    }
+    transposed
+}
+
+fn bytes_to_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{:02x}", byte)).collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    
+    #[test]
+    fn test_transpose() {
+        let chunks = vec![b"abc".as_slice(), b"def".as_slice(), b"ghi".as_slice()];
+        let expected = vec![b"adg".as_slice(), b"beh".as_slice(), b"cfi".as_slice()];
+        let result = transpose(&chunks);
+        assert_eq!(result, expected);
+    }
+    
+    #[test]
+    fn test_calculate_fitting_quotient() {
+        let input = b"The quick brown fox jumps over the lazy dog. This sentence is a well-known pangram, yet it does not actually reflect the standard distribution of letters in the English language. Instead, a natural text, such as this one, with varied words and a reasonable length, is better for testing frequency, as E, T, A, and O are most common.";
+        let expected = 0.009370335;
+        let result = calculate_fitting_quotient(input);
+        assert_eq!(result, expected);
+    }
 
     #[test]
     fn test_hex_to_bytes() {
@@ -233,13 +295,25 @@ mod tests {
         let base64 = "TQ==";
         assert_eq!(base64, hex_to_base64(&hex).expect("error"));
     }
+    
+    #[test]
+    fn test_base64_to_bytes() {
+        let base64 = "SSdtIGtpbGxpbmcgeW91ciBicmFpbiBsaWtlIGEgcG9pc29ub3VzIG11c2hyb29t";
+        let bytes = "I'm killing your brain like a poisonous mushroom".as_bytes();
+        assert_eq!(bytes, base64_to_bytes(base64).expect("error"));
+        
+        let base64 = "SSdtIGtpbGxpbmcgeW91ciBicmFpbiBsaWtlIGEgcG9pc29ub3VzIG11c2hyb29t";
+        let hex = "49276d206b696c6c696e6720796f757220627261696e206c696b65206120706f69736f6e6f7573206d757368726f6f6d";
+        let bytes = hex_to_bytes(hex).unwrap();
+        assert_eq!(bytes, base64_to_bytes(base64).expect("error"));
+    }
 
     #[test]
     fn test_fixed_xor() {
         let left = "1c0111001f010100061a024b53535009181c";
         let right = "686974207468652062756c6c277320657965";
         let exp = "746865206b696420646f6e277420706c6179";
-        let act = fixed_xor(left, &hex_to_bytes(right).unwrap())
+        let act = fixed_xor(&hex_to_bytes(left).unwrap(), &hex_to_bytes(right).unwrap())
             .unwrap()
             .into_iter()
             .map(|b| format!("{:X}", b))
@@ -249,93 +323,52 @@ mod tests {
     }
 
     #[test]
-    fn test_decipher_single_byte_xor() {
+    fn test_break_single_byte_xor() {
         let input = "1b37373331363f78151b7f2b783431333d78397828372d363c78373e783a393b3736";
-        let expected = "Cooking MC's like a pound of bacon".to_string();
-        assert_eq!(expected, decipher_single_byte_xor(input).unwrap());
+        let expected = "Cooking MC's like a pound of bacon".as_bytes();
+        assert_eq!(expected, break_single_byte_xor(&hex_to_bytes(input).unwrap()).unwrap().1);
     }
 
     #[test]
-    fn test_encode_repeating_key_xor() {
-        let input = "Burning 'em, if you ain't quick and nimble
+    fn test_encrypt_decrypt_repeating_key_xor() {
+        let plaintext = "Burning 'em, if you ain't quick and nimble
 I go crazy when I hear a cymbal";
         let expected = "0b3637272a2b2e63622c2e69692a23693a2a3c6324202d623d63343c2a26226324272765272a282b2f20430a652e2c652a3124333a653e2b2027630c692b20283165286326302e27282f"
             .to_string();
-        assert_eq!(expected, encode_repeating_key_xor(input, "ICE"));
+        let encrypted = encrypt_repeating_key_xor(plaintext.as_bytes(), "ICE");
+        let encrypted_hex = bytes_to_hex(&encrypted);
+        assert_eq!(expected, encrypted_hex);
+        let decrypted = decrypt_repeating_key_xor(&hex_to_bytes(&expected).unwrap(), "ICE");
+        assert_eq!(plaintext, String::from_utf8(decrypted).unwrap());
+        let decrypted = decrypt_repeating_key_xor(&encrypted, "ICE");
+        assert_eq!(plaintext, String::from_utf8(decrypted).unwrap());
     }
 
     #[test]
-    fn test_calculate_edit_distance() {
+    fn test_calculate_edit_distance_single_byte() {
         for (l, r, exp) in vec![(1, 1, 0), (2, 2, 0), (1, 3, 1), (1, 2, 2)] {
-            assert_eq!(exp, calculate_edit_distance(l, r));
+            assert_eq!(exp, calculate_edit_distance_single_byte(l, r));
         }
+    }
+    
+    #[test]
+    fn test_calculate_edit_distance() {
+        let left = "this is a test";
+        let right = "wokka wokka!!!";
+        let expected = 37;
+        assert_eq!(expected, calculate_edit_distance(left.as_bytes(), right.as_bytes()));
     }
 
     #[test]
     fn test_break_repeating_key_xor() {
-        let file = "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";
+//         let expected = "Burning 'em, if you ain't quick and nimble
+// I go crazy when I hear a cymbal";
+//         let input = "0b3637272a2b2e63622c2e69692a23693a2a3c6324202d623d63343c2a26226324272765272a282b2f20430a652e2c652a3124333a653e2b2027630c692b20283165286326302e27282f";
+//         assert_eq!(expected, String::from_utf8(break_repeating_key_xor(&hex_to_bytes(input).unwrap()).unwrap()).unwrap());
+        
+        let file = include_str!("../examples/repeating_key_xor_encrypted.txt");
+        let file = base64_to_bytes(file).unwrap();
+        let result = break_repeating_key_xor(&file).unwrap();
+        assert_eq!("TODO", result);
     }
 }
